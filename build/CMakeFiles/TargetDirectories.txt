@@ -1,0 +1,11 @@
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/probe.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/link.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/fixed_buffers.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/sq_poll.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/provide_buffers.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/eventfd.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/cat_io_uring.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/cat_liburing.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/webserver_liburing.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/edit_cache.dir
+/home/purva-s/Projects/web_server_liburing/build/CMakeFiles/rebuild_cache.dir
