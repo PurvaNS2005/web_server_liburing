@@ -44,7 +44,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <liburing.h>
 
 #define DEFAULT_HOST       "127.0.0.1"
@@ -181,7 +180,6 @@ static int connect_and_send(struct io_uring *ring, struct client *c,
         if (io_uring_submit(ring) < 0)
             return -errno;
     }
-
     return 0;
 }
 
