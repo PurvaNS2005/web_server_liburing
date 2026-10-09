@@ -1,0 +1,7 @@
+# A CRLF line ending makes bash fail with "\r: command not found" on the first
+# line, which breaks tests/smoke.sh for anyone cloning on Windows and running it
+# under WSL. core.autocrlf is true by default there, so this has to be forced.
+*.sh text eol=lf
+
+# Binary assets must never be line-ending translated.
+*.png binary

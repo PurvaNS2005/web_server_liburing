@@ -43,6 +43,24 @@ sudo pacman -S base-devel cmake liburing
 
 ## Build
 
+> **Note for fresh clones.** This repository has a `build/` directory committed
+> to it, including a `CMakeCache.txt` that records the absolute path of the
+> machine it was generated on. Configuring in-tree therefore fails with
+> *"The current CMakeCache.txt directory ... is different than the directory
+> ... where CMakeCache.txt was created"*. Remove the committed directory once:
+>
+> ```bash
+> rm -rf build
+> ```
+>
+> Building out-of-tree avoids the problem entirely and leaves the repository
+> clean:
+>
+> ```bash
+> cmake -S . -B /tmp/zh-build
+> cmake --build /tmp/zh-build --target webserver_liburing
+> ```
+
 ```bash
 mkdir -p build
 cd build
@@ -52,10 +70,10 @@ make
 
 This produces `build/webserver_liburing` alongside the liburing example binaries.
 
-To build just the server:
+To build just the server, and the client that goes with it:
 
 ```bash
-cmake --build build --target webserver_liburing
+cmake --build build --target webserver_liburing http_client
 ```
 
 ---
@@ -103,7 +121,7 @@ Press `Ctrl-C` to shut down cleanly.
 | `.jpg`, `.jpeg` | `image/jpeg` |
 | `.gif` | `image/gif` |
 
-Extensions are matched case-insensitively (`TUX.PNG` works). Any other extension falls through — see [Known limitations](#known-limitations).
+Extensions are lowercased before matching, so a file *named* `LOGO.PNG` is served as `image/png`. Note that this only affects the type lookup, not the file lookup — on a case-sensitive filesystem, asking for `/tux.png` when the file is `tux.png` works, but asking for `/TUX.PNG` is a legitimate 404. Any unrecognised extension falls through — see [Known limitations](#known-limitations).
 
 **Connection handling** — responses are `HTTP/1.0`, so the server closes the socket after every response. There's no keep-alive.
 
@@ -156,9 +174,64 @@ The ring is created with `io_uring_queue_init(QUEUE_DEPTH, ...)` and torn down i
 | File | Purpose |
 |---|---|
 | `webserver_liburing.c` | The server. This is the only file the project really needs. |
+| `examples/http_client.c` | An io_uring HTTP client that fetches from the server, demonstrating `CONNECT`, `SEND` and `RECV`. |
+| `tests/smoke.sh` | End-to-end tests. Starts the server and asserts on the bytes it sends back. |
 | `public/` | Document root — `index.html`, `tux.png` |
 | `CMakeLists.txt` | Build definition (note: the project is still named `liburing_examples`) |
 | `probe.c`, `link.c`, `fixed_buffers.c`, `sq_poll.c`, `provide_buffers.c`, `eventfd.c`, `cat_io_uring.c`, `cat_liburing.c` | Unmodified test programs copied from liburing's own `test/` suite. Useful as io_uring examples; not part of the server. |
+
+---
+
+## Testing
+
+There is a shell-based end-to-end suite. It launches the server, drives it over
+a real socket, and checks the responses — so it stays valid if the
+implementation is rewritten.
+
+```bash
+cmake -S . -B build
+cmake --build build --target webserver_liburing
+./tests/smoke.sh
+```
+
+Or through CTest, which passes the built binary's path automatically:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+Tests for bugs that are known but not yet fixed are marked **xfail**: they are
+expected to fail, and the suite reports **xpass** if one starts passing, which
+means the underlying bug has been fixed and the marker should come off.
+
+The suite needs `bash`, `curl` and `cmp`, and a free port 8000.
+
+---
+
+## Trying the client
+
+`examples/http_client.c` fetches from the server using io_uring, covering the
+opcodes the server itself never uses:
+
+| Opcode | Server | Client |
+|---|---|---|
+| `IORING_OP_ACCEPT`, `READV`, `WRITEV` | yes | — |
+| `IORING_OP_CONNECT`, `SEND`, `RECV` | no | yes |
+
+```bash
+cmake --build build --target http_client
+
+# in one terminal
+./build/webserver_liburing
+
+# in another
+./build/http_client                          # 127.0.0.1:8000/
+./build/http_client localhost 8000 /tux.png  # fetch the image
+./build/http_client localhost 8000 / -b      # also print the body
+```
+
+It exits 0 on a 2xx response and 1 otherwise, like `curl -f`. Note it needs
+Linux 5.6 or newer, since `SEND` and `RECV` arrived in 5.6.
 
 ---
 
