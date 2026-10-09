@@ -28,3 +28,19 @@ target_link_libraries(cat_liburing uring)
 
 add_executable(webserver_liburing webserver_liburing.c)
 target_link_libraries(webserver_liburing uring)
+
+add_executable(http_client examples/http_client.c)
+target_link_libraries(http_client uring)
+
+# End-to-end tests. tests/smoke.sh starts the server on port 8000 and drives it
+# over a real socket, so it needs bash and a free port -- run it directly rather
+# than relying on this, but wire it up so `ctest` picks it up too.
+enable_testing()
+find_program(BASH_EXECUTABLE bash)
+if(BASH_EXECUTABLE)
+    add_test(NAME smoke
+             COMMAND ${BASH_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke.sh)
+    set_tests_properties(smoke PROPERTIES
+        ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:webserver_liburing>")
+endif()
