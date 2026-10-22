@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/utsname.h>
+#include <limits.h>
 
 #define SERVER_STRING           "Server: zerohttpd/0.1\r\n"
 #define DEFAULT_SERVER_PORT     8000
@@ -303,6 +304,8 @@ void send_headers(const char *path, off_t len, struct iovec *iov) {
      * we turn the extension into lower case before checking.
      * */
     const char *file_ext = get_filename_ext(small_case_path);
+    /* Default for file types not explicitly recognized */
+    strcpy(send_buffer, "Content-Type: application/octet-stream\r\n");
     if (strcmp("jpg", file_ext) == 0)
         strcpy(send_buffer, "Content-Type: image/jpeg\r\n");
     if (strcmp("jpeg", file_ext) == 0)
@@ -344,47 +347,97 @@ void send_headers(const char *path, off_t len, struct iovec *iov) {
     memcpy(iov[4].iov_base, send_buffer, slen);
 }
 
+
+
 void handle_get_method(char *path, int client_socket) {
     char final_path[1024];
+    char resolved_path[PATH_MAX];
+    char resolved_root[PATH_MAX];
+    const char *root = "public";
+
+    if (path == NULL || path[0] != '/') {
+        handle_http_404(client_socket);
+        return;
+    }
+
+    size_t path_len = strlen(path);
+
+    /* Build the requested path without overflowing final_path. */
+    int written = snprintf(final_path, sizeof(final_path),
+                           "%s%s", root, path);
+
+    if (written < 0 || (size_t)written >= sizeof(final_path)) {
+        handle_http_404(client_socket);
+        return;
+    }
+
+    /* A trailing slash requests the directory's index.html. */
+    if (path_len > 0 && path[path_len - 1] == '/') {
+        size_t current_len = strlen(final_path);
+        const char *index_file = "index.html";
+        size_t index_len = strlen(index_file);
+
+        if (current_len + index_len >= sizeof(final_path)) {
+            handle_http_404(client_socket);
+            return;
+        }
+
+        memcpy(final_path + current_len, index_file, index_len + 1);
+    }
 
     /*
-     If a path ends in a trailing slash, the client probably wants the index
-     file inside of that directory.
+     * Resolve both paths to their canonical filesystem paths.
+     * This also resolves symlinks before checking containment.
      */
-    if (path[strlen(path) - 1] == '/') {
-        strcpy(final_path, "public");
-        strcat(final_path, path);
-        strcat(final_path, "index.html");
-    }
-    else {
-        strcpy(final_path, "public");
-        strcat(final_path, path);
+    if (realpath(root, resolved_root) == NULL ||
+        realpath(final_path, resolved_path) == NULL) {
+        handle_http_404(client_socket);
+        return;
     }
 
-    /* The stat() system call will give you information about the file
-     * like type (regular file, directory, etc), size, etc. */
-    struct stat path_stat;
-    if (stat(final_path, &path_stat) == -1) {
-        printf("404 Not Found: %s (%s)\n", final_path, path);
+    size_t root_len = strlen(resolved_root);
+
+    /*
+     * The requested file must be inside public, not merely have
+     * a path that starts with the same characters as public.
+     */
+    if (strncmp(resolved_path, resolved_root, root_len) != 0 ||
+        (resolved_path[root_len] != '/' &&
+         resolved_path[root_len] != '\0')) {
         handle_http_404(client_socket);
+        return;
     }
-    else {
-        /* Check if this is a normal/regular file and not a directory or something else */
-        if (S_ISREG(path_stat.st_mode)) {
-            struct request *req = zh_malloc(sizeof(*req) + (sizeof(struct iovec) * 6));
-            req->iovec_count = 6;
-            req->client_socket = client_socket;
-            send_headers(final_path, path_stat.st_size, req->iov);
-            copy_file_contents(final_path, path_stat.st_size, &req->iov[5]);
-            printf("200 %s %ld bytes\n", final_path, path_stat.st_size);
-            add_write_request( req);
-        }
-        else {
-            handle_http_404(client_socket);
-            printf("404 Not Found: %s\n", final_path);
-        }
+
+    /* Keep the path size compatible with the existing functions. */
+    size_t resolved_len = strlen(resolved_path);
+    if (resolved_len >= sizeof(final_path)) {
+        handle_http_404(client_socket);
+        return;
     }
+
+    memcpy(final_path, resolved_path, resolved_len + 1);
+
+    struct stat path_stat;
+    if (stat(final_path, &path_stat) == -1 ||
+        !S_ISREG(path_stat.st_mode)) {
+        handle_http_404(client_socket);
+        return;
+    }
+
+    struct request *req =
+        zh_malloc(sizeof(*req) + sizeof(struct iovec) * 6);
+
+    req->iovec_count = 6;
+    req->client_socket = client_socket;
+
+    send_headers(final_path, path_stat.st_size, req->iov);
+    copy_file_contents(final_path, path_stat.st_size, &req->iov[5]);
+
+    printf("200 %s %ld bytes\n", final_path, path_stat.st_size);
+    add_write_request(req);
 }
+
+
 
 /*
  * This function looks at method used and calls the appropriate handler function.
