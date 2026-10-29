@@ -1,46 +1,62 @@
 cmake_minimum_required(VERSION 3.15)
-project(liburing_examples C)
+project(ZeroHTTPd VERSION 1.0 LANGUAGES C CXX)
 
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "ZeroHTTPd requires Linux and io_uring")
+endif()
 set(CMAKE_C_STANDARD 99)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+option(BUILD_EXAMPLES "Build the original standalone io_uring examples" OFF)
+option(ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
+find_path(URING_INCLUDE_DIR liburing.h)
+find_library(URING_LIBRARY uring)
+if(NOT URING_INCLUDE_DIR OR NOT URING_LIBRARY)
+    message(FATAL_ERROR "liburing development files missing; install liburing-dev/liburing-devel")
+endif()
 
-add_executable(probe probe.c)
-target_link_libraries(probe uring)
-
-add_executable(link link.c)
-target_link_libraries(link uring)
-
-add_executable(fixed_buffers fixed_buffers.c)
-target_link_libraries(fixed_buffers uring)
-
-add_executable(sq_poll sq_poll.c)
-target_link_libraries(sq_poll uring)
-
-add_executable(provide_buffers provide_buffers.c)
-target_link_libraries(provide_buffers uring)
-
-add_executable(eventfd eventfd.c)
-target_link_libraries(eventfd uring pthread)
-
-add_executable(cat_io_uring cat_io_uring.c)
-
-add_executable(cat_liburing cat_liburing.c)
-target_link_libraries(cat_liburing uring)
-
-add_executable(webserver_liburing webserver_liburing.c)
-target_link_libraries(webserver_liburing uring)
-
+add_library(zerohttpd_core src/http.cpp src/config.cpp)
+target_include_directories(zerohttpd_core PUBLIC src)
+target_compile_options(zerohttpd_core PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(webserver_liburing src/server.cpp)
+target_include_directories(webserver_liburing PRIVATE ${URING_INCLUDE_DIR})
+target_link_libraries(webserver_liburing PRIVATE zerohttpd_core ${URING_LIBRARY})
+target_compile_definitions(webserver_liburing PRIVATE _GNU_SOURCE)
+target_compile_options(webserver_liburing PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(http_client examples/http_client.c)
-target_link_libraries(http_client uring)
+target_include_directories(http_client PRIVATE ${URING_INCLUDE_DIR})
+target_link_libraries(http_client PRIVATE ${URING_LIBRARY})
+target_compile_options(http_client PRIVATE -Wall -Wextra -Wpedantic)
 
-# End-to-end tests. tests/smoke.sh starts the server on port 8000 and drives it
-# over a real socket, so it needs bash and a free port -- run it directly rather
-# than relying on this, but wire it up so `ctest` picks it up too.
-enable_testing()
-find_program(BASH_EXECUTABLE bash)
-if(BASH_EXECUTABLE)
-    add_test(NAME smoke
-             COMMAND ${BASH_EXECUTABLE}
-                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke.sh)
-    set_tests_properties(smoke PROPERTIES
-        ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:webserver_liburing>")
+if(BUILD_EXAMPLES)
+    foreach(example probe link fixed_buffers sq_poll provide_buffers eventfd cat_io_uring cat_liburing)
+        add_executable(${example} ${example}.c)
+        target_include_directories(${example} PRIVATE ${URING_INCLUDE_DIR})
+        target_link_libraries(${example} PRIVATE ${URING_LIBRARY})
+    endforeach()
+    target_link_libraries(eventfd PRIVATE pthread)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(core_tests tests/core_tests.cpp)
+    target_link_libraries(core_tests PRIVATE zerohttpd_core)
+    target_compile_options(core_tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME core COMMAND core_tests)
+    find_package(Python3 3.8 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME integration COMMAND ${Python3_EXECUTABLE}
+             ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.py
+             --server $<TARGET_FILE:webserver_liburing>
+             --client $<TARGET_FILE:http_client>)
+    set_tests_properties(integration PROPERTIES TIMEOUT 120)
+endif()
+
+if(ENABLE_SANITIZERS)
+    foreach(target zerohttpd_core webserver_liburing http_client core_tests)
+        if(TARGET ${target})
+            target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -g)
+            target_link_options(${target} PRIVATE -fsanitize=address,undefined -no-pie)
+        endif()
+    endforeach()
 endif()

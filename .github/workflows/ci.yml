@@ -1,0 +1,18 @@
+name: Build and regression tests
+on: [push, pull_request]
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        sanitizers: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install liburing
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
+      - name: Configure
+        run: cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_SANITIZERS=${{ matrix.sanitizers }}
+      - name: Build
+        run: cmake --build build-ci --parallel 2
+      - name: Test
+        run: ctest --test-dir build-ci --output-on-failure

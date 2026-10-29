@@ -10,9 +10,6 @@
 #include <unistd.h>
 #include <string.h>
 
-/* If your compilation fails because the header file below is missing,
- * your kernel is probably too old to support io_uring.
- * */
 #include <linux/io_uring.h>
 
 #define QUEUE_DEPTH 1

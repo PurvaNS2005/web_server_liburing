@@ -95,17 +95,15 @@ static void usage(const char *argv0) {
 static int reserve(struct client *c, size_t extra) {
     size_t cap;
 
+    if (extra > RESP_MAX - c->resp_len)
+        return -1;
+
     if (c->resp_cap - c->resp_len >= extra)
         return 0;
 
     cap = c->resp_cap ? c->resp_cap : RESP_CHUNK;
-    while (cap - c->resp_len < extra) {
-        if (cap > RESP_MAX)
-            return -1;
-        cap *= 2;
-    }
-    if (cap > RESP_MAX)
-        cap = RESP_MAX;
+    while (cap - c->resp_len < extra)
+        cap = cap > RESP_MAX / 2 ? RESP_MAX : cap * 2;
 
     unsigned char *tmp = realloc(c->resp, cap);
     if (!tmp)
@@ -132,16 +130,17 @@ static int connect_and_send(struct io_uring *ring, struct client *c,
         return -EAGAIN;
     io_uring_prep_connect(sqe, c->fd, ai->ai_addr, ai->ai_addrlen);
     io_uring_sqe_set_data64(sqe, TAG_CONNECT);
+    io_uring_sqe_set_flags(sqe, IOSQE_IO_LINK);
 
     sqe = io_uring_get_sqe(ring);
     if (!sqe)
         return -EAGAIN;
     io_uring_prep_send(sqe, c->fd, c->req, c->req_len, 0);
     io_uring_sqe_set_data64(sqe, TAG_SEND);
-    io_uring_sqe_set_flags(sqe, IOSQE_IO_LINK);
 
-    if (io_uring_submit(ring) < 0)
-        return -errno;
+    int submitted = io_uring_submit(ring);
+    if (submitted < 0)
+        return submitted;
 
     while (!sent_done) {
         uint64_t tag;
@@ -162,6 +161,8 @@ static int connect_and_send(struct io_uring *ring, struct client *c,
 
         if (res < 0)
             return res;
+        if (!res)
+            return -EPIPE;
 
         c->req_sent += (size_t)res;
         if (c->req_sent >= c->req_len) {
@@ -177,8 +178,9 @@ static int connect_and_send(struct io_uring *ring, struct client *c,
         io_uring_prep_send(sqe, c->fd, c->req + c->req_sent,
                            c->req_len - c->req_sent, 0);
         io_uring_sqe_set_data64(sqe, TAG_SEND);
-        if (io_uring_submit(ring) < 0)
-            return -errno;
+        submitted = io_uring_submit(ring);
+        if (submitted < 0)
+            return submitted;
     }
     return 0;
 }
@@ -186,10 +188,8 @@ static int connect_and_send(struct io_uring *ring, struct client *c,
 /*
  * Read until the peer closes.
  *
- * The server speaks HTTP/1.0, sends no Content-Length on its error pages, and
- * closes the socket straight after the write completes -- so end-of-file is the
- * only reliable end-of-response signal. Stopping at the header block, or
- * assuming one recv() returns the whole body, both truncate large files.
+ * We request Connection: close, so EOF terminates the complete response.
+ * A single recv() is not guaranteed to contain all headers or the whole body.
  */
 static int recv_all(struct io_uring *ring, struct client *c) {
     struct io_uring_sqe *sqe;
@@ -198,8 +198,9 @@ static int recv_all(struct io_uring *ring, struct client *c) {
     for (;;) {
         size_t room;
         int res;
+        unsigned char overflow;
 
-        if (reserve(c, RESP_CHUNK) < 0)
+        if (c->resp_len < RESP_MAX && reserve(c, 1) < 0)
             return -ENOMEM;
 
         room = c->resp_cap - c->resp_len;
@@ -207,10 +208,12 @@ static int recv_all(struct io_uring *ring, struct client *c) {
         sqe = io_uring_get_sqe(ring);
         if (!sqe)
             return -EAGAIN;
-        io_uring_prep_recv(sqe, c->fd, c->resp + c->resp_len, room, 0);
+        io_uring_prep_recv(sqe, c->fd, room ? c->resp + c->resp_len : &overflow,
+                           room ? room : 1, 0);
         io_uring_sqe_set_data64(sqe, TAG_RECV);
-        if (io_uring_submit(ring) < 0)
-            return -errno;
+        int submitted = io_uring_submit(ring);
+        if (submitted < 0)
+            return submitted;
 
         if (io_uring_wait_cqe(ring, &cqe) < 0)
             return -EIO;
@@ -222,6 +225,8 @@ static int recv_all(struct io_uring *ring, struct client *c) {
             return res;
         if (res == 0)
             return 0;               /* peer closed: response complete */
+        if (!room)
+            return -EFBIG;
 
         c->resp_len += (size_t)res;
     }
@@ -252,8 +257,13 @@ static int print_response(const struct client *c, int dump_body) {
         return 0;
     }
 
-    if (c->resp_len >= 12)
-        sscanf((const char *)c->resp, "HTTP/%*d.%*d %d", &status);
+    if (c->resp_len >= 12) {
+        char status_line[128];
+        size_t length = c->resp_len < sizeof(status_line) - 1 ? c->resp_len : sizeof(status_line) - 1;
+        memcpy(status_line, c->resp, length);
+        status_line[length] = '\0';
+        sscanf(status_line, "HTTP/%*d.%*d %d", &status);
+    }
 
     printf("\n%zu bytes of body", body_len);
     if (dump_body) {
@@ -354,6 +364,7 @@ int main(int argc, char **argv) {
     ret = recv_all(&ring, &c);
     if (ret < 0) {
         fprintf(stderr, "error: reading response: %s\n", strerror(-ret));
+        free(c.resp);
         close(c.fd);
         io_uring_queue_exit(&ring);
         freeaddrinfo(ai);
